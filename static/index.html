@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outside Quest</title>
+<style>
+  :root { --bg:#f3f6ee; --card:#fff; --ink:#1d2a1b; --muted:#5d6b59; --leaf:#2f6b2a; --leaf2:#e4f0dd; --sun:#f2b632; --line:#d9e3d2; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family: system-ui, "Noto Sans", sans-serif; background:var(--bg); color:var(--ink); font-size:18px; line-height:1.5; }
+  main { max-width:760px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:2rem; margin:0; }
+  .tag { color:var(--muted); margin:2px 0 18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:18px; margin-bottom:16px; }
+  .step { font-weight:700; color:var(--leaf); text-transform:uppercase; letter-spacing:.05em; font-size:.8rem; }
+  input[type=text] { font:inherit; width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; }
+  .row > * { flex:1 1 220px; }
+  button { font:inherit; font-weight:700; border:0; border-radius:12px; padding:12px 18px; cursor:pointer; background:var(--leaf); color:#fff; }
+  button.ghost { background:#fff; color:var(--leaf); border:2px solid var(--leaf); }
+  button:disabled { opacity:.6; cursor:wait; }
+  .status { font-size:.85rem; color:var(--muted); }
+  .status.bad { color:#a40000; }
+  #questCard h2 { margin:.2em 0 .6em; }
+  .quest { display:flex; align-items:center; gap:12px; padding:10px 12px; border:2px dashed var(--line); border-radius:12px; margin-bottom:8px; }
+  .quest .e { font-size:1.6rem; width:2rem; text-align:center; }
+  .quest .t { flex:1; }
+  .quest .p { font-weight:700; color:var(--leaf); }
+  .quest.done { border-style:solid; border-color:var(--leaf); background:var(--leaf2); }
+  .quest img { width:56px; height:56px; object-fit:cover; border-radius:8px; }
+  .quest .ev { display:block; font-size:.8rem; color:var(--muted); }
+  #away { display:none; position:fixed; inset:0; background:var(--leaf); color:#fff; text-align:center; padding:12vh 24px; z-index:5; }
+  #away h2 { font-size:2.2rem; margin:0 0 12px; }
+  #away p { font-size:1.2rem; }
+  #away button { background:#fff; color:var(--leaf); margin-top:24px; }
+  .score { font-size:2.2rem; font-weight:800; color:var(--leaf); }
+  .journal-item { display:flex; gap:12px; padding:10px 0; border-top:1px solid var(--line); }
+  .journal-item img { width:96px; height:96px; object-fit:cover; border-radius:10px; flex:none; }
+  .time { font-weight:700; }
+  svg { display:block; width:100%; max-height:260px; background:var(--leaf2); border-radius:12px; }
+  .badges span { display:inline-block; background:var(--sun); border-radius:999px; padding:4px 12px; margin:4px 6px 0 0; font-weight:700; font-size:.9rem; }
+  footer { color:var(--muted); font-size:.85rem; text-align:center; margin-top:20px; }
+  @media print { body { background:#fff; } .noprint, footer, #back, #journal { display:none !important; } .card { border:2px solid #000; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Outside Quest 🌿</h1>
+  <p class="tag">Two minutes on a screen, an hour outside. A photo scavenger hunt that runs on an open model on your own computer, no internet needed.</p>
+  <p id="health" class="status noprint" role="status">Checking the local model…</p>
+
+  <section class="card noprint" id="setup">
+    <div class="step">Before you go</div>
+    <div class="row" style="margin:10px 0">
+      <label>Where are you walking? <input type="text" id="place" placeholder="e.g. Ambazari lake, Nagpur"></label>
+      <label>Who's going? <input type="text" id="who" placeholder="e.g. me and my 8-year-old"></label>
+    </div>
+    <div class="row" style="flex-wrap:wrap">
+      <button id="make">Make my quest</button>
+      <button id="quick" class="ghost">Quick card (instant)</button>
+    </div>
+  </section>
+
+  <section class="card" id="questCard" style="display:none">
+    <div class="step">Your quest · <span id="month"></span></div>
+    <h2 id="title"></h2>
+    <div id="quests"></div>
+    <p class="status">Find each one and take a photo. That's all you need the phone for.</p>
+    <div class="row noprint">
+      <button id="go">I'm heading out →</button>
+      <button class="ghost" onclick="window.print()">Print the card</button>
+    </div>
+  </section>
+
+  <section class="card noprint" id="back" style="display:none">
+    <div class="step">Back from the walk?</div>
+    <p style="margin:6px 0 12px">Add the photos you took. Your quest card gets checked on this computer.</p>
+    <label for="photos" style="display:block;font-weight:600;margin-bottom:6px">Your walk photos</label>
+    <input type="file" id="photos" accept="image/*" multiple>
+    <p id="progress" class="status" aria-live="polite"></p>
+    <div id="result" style="display:none">
+      <div class="score"><span id="score">0</span> pts</div>
+      <div class="badges" id="badges"></div>
+    </div>
+  </section>
+
+  <section class="card noprint" id="journal" style="display:none">
+    <div class="step">Walk journal</div>
+    <p id="summary" style="margin:6px 0"></p>
+    <div id="map"></div>
+    <div id="entries"></div>
+  </section>
+
+  <footer>Runs Gemma 4 locally with Ollama. Photos never leave this computer. Look, don't touch: never pick or eat wild plants or mushrooms, and give animals space.</footer>
+</main>
+
+<div id="away" role="dialog" aria-modal="true" aria-labelledby="awayTitle">
+  <h2 id="awayTitle">Phone away 🌳</h2>
+  <p>Your quest started at <strong id="startAt"></strong>.</p>
+  <p id="awayList"></p>
+  <p>Only take it out to snap a photo. See you in an hour.</p>
+  <button id="home">I'm back</button>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let card = null, results = [];
+  const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+                  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+  const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  const month = new Date().toLocaleString('en', { month: 'long' });
+  $('month').textContent = month;
+
+  fetch('/api/health').then(r => r.json()).then(h => {
+    $('health').textContent = h.ok ? `Ready · ${h.model} running locally, offline` : (h.error || `Run: ollama pull ${h.model}`);
+    if (!h.ok) $('health').classList.add('bad');
+  }).catch(() => { $('health').textContent = 'Server not reachable'; $('health').classList.add('bad'); });
+
+  function renderCard() {
+    $('title').textContent = card.title;
+    const done = new Map();
+    results.forEach(r => r.completed.forEach(c => { if (!done.has(c.id)) done.set(c.id, { thumb: r.thumb, ev: c.evidence }); }));
+    $('quests').innerHTML = card.quests.map(q => {
+      const d = done.get(q.id);
+      return `<div class="quest ${d ? 'done' : ''}"><span class="e" aria-hidden="true">${esc(q.emoji)}</span>
+        <span class="t">${esc(q.text)}${d ? `<span class="ev">✓ ${esc(d.ev)}</span>` : ''}</span>
+        ${d ? `<img src="${d.thumb}" alt="Photo that completed: ${esc(q.text)}">` : ''}
+        <span class="p">${d ? '✓ ' : ''}${q.points}</span></div>`;
+    }).join('');
+    $('questCard').style.display = 'block';
+    $('back').style.display = 'block';
+    const score = card.quests.filter(q => done.has(q.id)).reduce((a, q) => a + q.points, 0);
+    $('score').textContent = score;
+    const n = done.size, badges = [];
+    if (n >= 1) badges.push('🌱 First find');
+    if (n >= 3) badges.push('🥾 Trail explorer');
+    if (n === card.quests.length) badges.push('🏆 Quest complete');
+    $('badges').innerHTML = badges.map(b => `<span>${b}</span>`).join('');
+    $('result').style.display = results.length ? 'block' : 'none';
+  }
+
+  $('make').addEventListener('click', async () => {
+    $('make').disabled = true; $('make').textContent = 'Writing your quest… (about 30 s)';
+    try {
+      const r = await fetch('/api/quests', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ place: $('place').value, who: $('who').value, month }) });
+      card = await r.json(); results = []; store.set('quest', { card, startedAt: null });
+      renderCard(); $('journal').style.display = 'none';
+    } finally { $('make').disabled = false; $('make').textContent = 'Make a new quest'; }
+  });
+
+  $('quick').addEventListener('click', async () => {
+    const r = await fetch('/api/quests', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ quick: true }) });
+    card = await r.json(); results = []; store.set('quest', { card, startedAt: null }); renderCard(); $('journal').style.display = 'none';
+  });
+
+  $('go').addEventListener('click', () => {
+    const t = new Date(); store.set('quest', { card, startedAt: t.toISOString() });
+    $('startAt').textContent = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    $('awayList').textContent = card.quests.map(q => q.emoji).join('  ');
+    $('away').style.display = 'block'; $('home').focus();
+  });
+  $('home').addEventListener('click', () => { $('away').style.display = 'none'; $('photos').focus(); });
+
+  $('photos').addEventListener('change', async (e) => {
+    const files = [...e.target.files];
+    for (const [i, f] of files.entries()) {
+      $('progress').textContent = `Checking photo ${i + 1} of ${files.length} on this computer… (~30 s each)`;
+      const image = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(f); });
+      try {
+        const r = await fetch('/api/check', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ quests: card.quests, image }) });
+        const d = await r.json();
+        if (d.error) { $('progress').textContent = d.error; continue; }
+        results.push({ ...d, name: f.name, fallbackTime: f.lastModified });
+        renderCard(); renderJournal();
+      } catch (err) { $('progress').textContent = 'Something went wrong: ' + err; }
+    }
+    $('progress').textContent = `Done: ${files.length} photo${files.length === 1 ? '' : 's'} checked.`;
+    e.target.value = '';
+  });
+
+  function renderJournal() {
+    const items = results.map(r => ({ ...r, t: new Date(r.taken_at || r.fallbackTime) })).sort((a, b) => a.t - b.t);
+    const first = items[0].t, last = items[items.length - 1].t;
+    const mins = Math.round((last - first) / 60000);
+    const found = new Set(results.flatMap(r => r.completed.map(c => c.id))).size;
+    $('summary').textContent = `${items.length} photos · ${found} of ${card.quests.length} quests` +
+      (mins > 0 ? ` · ${mins} minutes from first to last photo` : '');
+    const pts = items.filter(i => i.gps);
+    $('map').innerHTML = pts.length >= 2 ? routeSvg(pts) : '';
+    $('entries').innerHTML = items.map(i => `<div class="journal-item"><img src="${i.thumb}" alt="${esc(i.what_i_see)}">
+      <div><span class="time">${i.taken_at ? i.t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : esc(i.name)}</span>
+      <div>${esc(i.what_i_see)}</div>
+      <div class="status">${i.completed.map(c => '✓ ' + esc(card.quests.find(q => q.id === c.id).text)).join(' · ') || 'No quest, still a nice find'}</div></div></div>`).join('');
+    $('journal').style.display = 'block';
+  }
+
+  // A tiny offline "map": the GPS points of your photos, joined in time order.
+  function routeSvg(pts) {
+    const lat = pts.map(p => p.gps[0]), lon = pts.map(p => p.gps[1]);
+    const minLat = Math.min(...lat), maxLat = Math.max(...lat), minLon = Math.min(...lon), maxLon = Math.max(...lon);
+    const k = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
+    const w = Math.max((maxLon - minLon) * k, 1e-5), h = Math.max(maxLat - minLat, 1e-5), s = 280 / Math.max(w, h);
+    const xy = pts.map(p => [20 + (p.gps[1] - minLon) * k * s, 20 + (maxLat - p.gps[0]) * s]);
+    const metres = pts.slice(1).reduce((a, p, i) => { const q = pts[i];
+      const dy = (p.gps[0] - q.gps[0]) * 111320, dx = (p.gps[1] - q.gps[1]) * 111320 * k; return a + Math.hypot(dx, dy); }, 0);
+    return `<svg viewBox="0 0 ${40 + w * s} ${40 + h * s}" role="img" aria-label="Route of your photos, about ${Math.round(metres)} metres">
+      <polyline points="${xy.map(p => p.join(',')).join(' ')}" fill="none" stroke="#2f6b2a" stroke-width="3" stroke-linejoin="round"/>
+      ${xy.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="6" fill="${i ? '#f2b632' : '#2f6b2a'}"/>`).join('')}
+      </svg><p class="status">About ${(metres / 1000).toFixed(2)} km between photos (straight lines, offline).</p>`;
+  }
+
+  const saved = store.get('quest');
+  if (saved && saved.card) { card = saved.card; renderCard(); }
+</script>
+</body>
+</html>
