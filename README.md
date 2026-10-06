@@ -29,6 +29,34 @@ python3 server.py               # open http://127.0.0.1:8777
 Tested on a laptop with a 6 GB GTX 1660 Ti: a quest card takes ~30 s, checking a photo ~25-35 s.
 Settings: `QUEST_MODEL`, `QUEST_OLLAMA_URL`, `QUEST_HOST`, `QUEST_PORT`.
 
+## Durable mode (optional): Temporal
+
+Checking photos is slow on a laptop (~30 s each), so a 40-photo walk takes about 20 minutes. In the plain mode the
+browser loops over the photos, and closing the tab, the laptop sleeping, or Ollama running out of memory loses the
+rest. With a local [Temporal](https://temporal.io) server, each walk becomes a workflow and each photo an activity:
+
+```bash
+temporal server start-dev --db-filename ~/.outside-quest/temporal.db   # open source, runs locally
+python3 server.py                                                        # detects it: "durable checking via Temporal"
+```
+
+- Photos are saved to `~/.outside-quest/walks/` first, so you can close the tab right after uploading.
+- A failed model call (Ollama down, out of memory, broken JSON) is retried with backoff (5 s → 2 min, 30 attempts).
+- Kill the server mid-walk and start it again: the workflow continues from the next unchecked photo, and the page
+  picks the walk back up when you reopen it. Each photo's answer is cached, so nothing is checked twice.
+
+Tested by stopping Ollama and then killing the app server in the middle of a 6-photo walk. The red bar is the photo
+that failed while Ollama was down; attempt 4 succeeded once it was back, and all 6 photos were checked:
+
+![Temporal timeline: retries while Ollama was down](docs/temporal-retry.jpg)
+
+Without Temporal running, the app works exactly as before.
+
+## Photos without location
+
+Messaging apps such as WhatsApp strip EXIF data, and iPhone sharing can leave location out. The journal now says
+so ("no location in 2 of 5 photos") instead of silently showing no map. Copy originals over USB or AirDrop.
+
 ## Why a scavenger hunt and not a species identifier
 
 I first built a plant/bird identifier. Then I tested it. On six photos, `gemma4:e2b` called a Common Myna a
@@ -56,6 +84,7 @@ with a JSON schema, so the model can't invent quests or award points without say
 
 - `server.py`: Python standard library plus Pillow. Two endpoints: `/api/quests` (structured-output quest card)
   and `/api/check` (reads EXIF time + GPS, resizes to 1024 px, asks Gemma which quests the photo completes).
+- `durable.py`: optional Temporal workflow (`CheckWalk`) and activity (`check_one`), with a worker that runs inside the server.
 - `static/index.html`: one file, no framework. Quest card, a full-screen "phone away" timer, results board,
   badges, journal and an SVG route drawn from the photos' coordinates (no map tiles, so it works offline).
 

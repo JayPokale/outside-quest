@@ -245,6 +245,35 @@ def check_photo(jpeg: bytes, quests):
             "main_subject": str(data.get("main_subject", "")).strip()[:80], "completed": done}
 
 
+# --------------------------------------------------------------- durable ---
+
+DURABLE = None  # set in main() when a local Temporal server is reachable; see durable.py
+
+
+def save_walk_photo(walk_id: str, name: str, raw: bytes, modified):
+    """Resize and store one photo for a durable walk. Returns its EXIF time and GPS."""
+    import durable
+    folder = durable.walk_dir(walk_id)
+    if not re.fullmatch(r"p\d{1,4}", name):
+        raise ValueError("bad photo name")
+    folder.mkdir(parents=True, exist_ok=True)
+    jpeg, taken, gps = read_photo(raw)
+    (folder / f"{name}.jpg").write_bytes(jpeg)
+    meta = {"taken_at": taken, "gps": gps, "fallbackTime": modified}
+    (folder / f"{name}.meta.json").write_text(json.dumps(meta))
+    return meta
+
+
+def walk_progress(walk_id: str):
+    import durable
+    p = DURABLE.progress(walk_id)
+    folder = durable.walk_dir(walk_id)
+    for r in p["results"]:
+        r.update(json.loads((folder / f'{r["name"]}.meta.json').read_text()))
+        r["thumb"] = "data:image/jpeg;base64," + base64.b64encode((folder / f'{r["name"]}.jpg').read_bytes()).decode()
+    return p
+
+
 # ------------------------------------------------------------------ http ---
 
 class Handler(BaseHTTPRequestHandler):
@@ -273,9 +302,15 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 with urllib.request.urlopen(OLLAMA_URL + "/api/tags", timeout=3) as r:
                     names = [m["name"] for m in json.load(r).get("models", [])]
-                return self._json(200, {"ok": MODEL in names, "model": MODEL})
+                return self._json(200, {"ok": MODEL in names, "model": MODEL, "durable": DURABLE is not None})
             except (urllib.error.URLError, OSError):
                 return self._json(200, {"ok": False, "model": MODEL, "error": "Ollama is not running"})
+        m = re.fullmatch(r"/api/walk/([a-z0-9-]{8,40})", self.path)
+        if m and DURABLE:
+            try:
+                return self._json(200, walk_progress(m.group(1)))
+            except Exception as e:  # unknown walk, or Temporal went away
+                return self._json(404, {"error": f"walk not found ({type(e).__name__})"})
         name = "index.html" if self.path in ("/", "/index.html") else self.path.lstrip("/").split("?")[0]
         path = (STATIC / name).resolve()
         if STATIC.resolve() not in path.parents or not path.is_file():
@@ -300,6 +335,15 @@ class Handler(BaseHTTPRequestHandler):
                 month = data.get("month") or datetime.now().strftime("%B")
                 return self._json(200, make_quests(str(data.get("place", ""))[:80], str(month)[:20],
                                                    str(data.get("who", ""))[:60]))
+            if self.path == "/api/walk/photo" and DURABLE:
+                raw = base64.b64decode(str(data.get("image", "")).split(",", 1)[-1], validate=True)
+                return self._json(200, save_walk_photo(str(data.get("walk_id")), str(data.get("name")), raw,
+                                                       data.get("modified")))
+            if self.path == "/api/walk/start" and DURABLE:
+                quests = [q for q in data.get("quests", []) if isinstance(q, dict) and "id" in q][:8]
+                names = [str(n) for n in data.get("names", [])][:500]
+                DURABLE.start(str(data.get("walk_id")), names, quests)
+                return self._json(200, {"ok": True})
             if self.path == "/api/check":
                 quests = [q for q in data.get("quests", []) if isinstance(q, dict) and "id" in q][:8]
                 raw = base64.b64decode(str(data.get("image", "")).split(",", 1)[-1], validate=True)
@@ -316,8 +360,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global DURABLE
+    try:
+        import durable
+        d = durable.Durable()
+        if d.connect():
+            DURABLE = d
+    except ImportError:
+        pass
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"Outside Quest at http://{HOST}:{PORT}  (model: {MODEL}, offline)")
+    print(f"Outside Quest at http://{HOST}:{PORT}  (model: {MODEL}, offline, "
+          + ("durable checking via Temporal" if DURABLE else "plain checking; run Temporal for durable mode") + ")")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

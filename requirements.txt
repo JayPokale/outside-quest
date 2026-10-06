@@ -1,1 +1,2 @@
 pillow>=10
+temporalio>=1.34  # optional: durable mode

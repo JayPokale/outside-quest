@@ -112,7 +112,8 @@
   $('month').textContent = month;
 
   fetch('/api/health').then(r => r.json()).then(h => {
-    $('health').textContent = h.ok ? `Ready · ${h.model} running locally, offline` : (h.error || `Run: ollama pull ${h.model}`);
+    durable = !!h.durable;
+    $('health').textContent = h.ok ? `Ready · ${h.model} running locally, offline${durable ? ' · durable checking on' : ''}` : (h.error || `Run: ollama pull ${h.model}`);
     if (!h.ok) $('health').classList.add('bad');
   }).catch(() => { $('health').textContent = 'Server not reachable'; $('health').classList.add('bad'); });
 
@@ -162,33 +163,72 @@
   });
   $('home').addEventListener('click', () => { $('away').style.display = 'none'; $('photos').focus(); });
 
+  let durable = false;
+  const readFile = (f) => new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(f); });
+  const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+
   $('photos').addEventListener('change', async (e) => {
     const files = [...e.target.files];
+    e.target.value = '';
+    if (durable) return checkDurably(files);
     for (const [i, f] of files.entries()) {
       $('progress').textContent = `Checking photo ${i + 1} of ${files.length} on this computer… (~30 s each)`;
-      const image = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(f); });
       try {
-        const r = await fetch('/api/check', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ quests: card.quests, image }) });
-        const d = await r.json();
+        const d = await post('/api/check', { quests: card.quests, image: await readFile(f) });
         if (d.error) { $('progress').textContent = d.error; continue; }
         results.push({ ...d, name: f.name, fallbackTime: f.lastModified });
         renderCard(); renderJournal();
       } catch (err) { $('progress').textContent = 'Something went wrong: ' + err; }
     }
     $('progress').textContent = `Done: ${files.length} photo${files.length === 1 ? '' : 's'} checked.`;
-    e.target.value = '';
   });
+
+  // Durable mode (server running with Temporal): save every photo first, then a workflow checks them one by one.
+  // You can close this tab or restart the server; reopening the page picks the walk back up.
+  async function checkDurably(files) {
+    const walkId = crypto.randomUUID(), names = [];
+    for (const [i, f] of files.entries()) {
+      $('progress').textContent = `Saving photo ${i + 1} of ${files.length}…`;
+      const name = 'p' + i, d = await post('/api/walk/photo', { walk_id: walkId, name, image: await readFile(f), modified: f.lastModified });
+      if (d.error) { $('progress').textContent = `${f.name}: ${d.error}`; continue; }
+      names.push(name);
+    }
+    await post('/api/walk/start', { walk_id: walkId, names, quests: card.quests });
+    store.set('walk', { id: walkId, card });
+    pollWalk(walkId);
+  }
+
+  async function pollWalk(walkId) {
+    let p;
+    try { p = await (await fetch('/api/walk/' + walkId)).json(); } catch { p = { error: 'server not reachable' }; }
+    if (p.error) { $('progress').textContent = `Waiting for the server (${p.error})…`; return setTimeout(() => pollWalk(walkId), 5000); }
+    results = p.results; renderCard(); if (results.length) renderJournal();
+    const failed = p.failed.length ? ` · ${p.failed.length} could not be checked` : '';
+    if (p.running) {
+      $('progress').textContent = `Checked ${results.length} of ${p.total} photos${failed}. Safe to close this tab: checking continues on this computer.`;
+      setTimeout(() => pollWalk(walkId), 3000);
+    } else {
+      $('progress').textContent = `Done: ${results.length} of ${p.total} photos checked${failed}.`;
+      store.set('walk', null);
+    }
+  }
 
   function renderJournal() {
     const items = results.map(r => ({ ...r, t: new Date(r.taken_at || r.fallbackTime) })).sort((a, b) => a.t - b.t);
-    const first = items[0].t, last = items[items.length - 1].t;
-    const mins = Math.round((last - first) / 60000);
+    // Only camera times give a real walk length; file dates of copied photos can be days apart.
+    const timed = items.filter(i => i.taken_at);
+    const mins = timed.length >= 2 ? Math.round((timed[timed.length - 1].t - timed[0].t) / 60000) : 0;
     const found = new Set(results.flatMap(r => r.completed.map(c => c.id))).size;
     $('summary').textContent = `${items.length} photos · ${found} of ${card.quests.length} quests` +
       (mins > 0 ? ` · ${mins} minutes from first to last photo` : '');
-    const pts = items.filter(i => i.gps);
-    $('map').innerHTML = pts.length >= 2 ? routeSvg(pts) : '';
+    const pts = items.filter(i => i.gps), noTime = items.filter(i => !i.taken_at).length;
+    // Messaging apps (WhatsApp and others) and some share sheets strip EXIF, so say so instead of showing nothing.
+    const missing = [];
+    if (pts.length < items.length) missing.push(`no location in ${items.length - pts.length} of ${items.length} photos`);
+    if (noTime) missing.push(`no camera time in ${noTime}`);
+    $('map').innerHTML = (pts.length >= 2 ? routeSvg(pts) : '') + (missing.length ? `<p class="status bad">Heads up: ${missing.join(', ')}.
+      Messaging apps like WhatsApp remove this data, and iPhone sharing can leave location out.
+      For the route and timeline, copy the original photos over USB or AirDrop (with location on in the share options).</p>` : '');
     $('entries').innerHTML = items.map(i => `<div class="journal-item"><img src="${i.thumb}" alt="${esc(i.what_i_see)}">
       <div><span class="time">${i.taken_at ? i.t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : esc(i.name)}</span>
       <div>${esc(i.what_i_see)}</div>
@@ -213,6 +253,8 @@
 
   const saved = store.get('quest');
   if (saved && saved.card) { card = saved.card; renderCard(); }
+  const walk = store.get('walk');
+  if (walk && walk.id) { card = walk.card; renderCard(); pollWalk(walk.id); }
 </script>
 </body>
 </html>
